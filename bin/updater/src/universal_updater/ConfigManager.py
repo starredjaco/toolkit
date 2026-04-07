@@ -1,4 +1,5 @@
 import configparser
+import threading
 import colorama
 
 
@@ -16,6 +17,7 @@ class ConfigManager:
         """
         self.config = configparser.ConfigParser()
         self.config_file_name = config_file_name
+        self._lock = threading.Lock()
         self.config.read(self.config_file_name)
 
     def get_config(self, section, key, fallback=None):
@@ -27,7 +29,8 @@ class ConfigManager:
         :param fallback: Fallback value if key is not found
         :return: Value of the configuration key
         """
-        return self.config.get(section, key, fallback=fallback)
+        with self._lock:
+            return self.config.get(section, key, fallback=fallback)
 
     def set_config(self, section, key, value):
         """
@@ -37,11 +40,12 @@ class ConfigManager:
         :param key: Key in the section
         :param value: Value to set
         """
-        if not self.config.has_section(section):
-            self.config.add_section(section)
+        with self._lock:
+            if not self.config.has_section(section):
+                self.config.add_section(section)
 
-        self.config.set(section, key, value)
-        self.save_config()
+            self.config.set(section, key, value)
+            self._write_config()
 
     def get_tool_config(self, name):
         """
@@ -50,8 +54,9 @@ class ConfigManager:
         :param name: Name of the tool
         :return: Dictionary containing the tool's configuration
         """
-        if name in self.config.sections():
-            return dict(self.config.items(name))
+        with self._lock:
+            if name in self.config.sections():
+                return dict(self.config.items(name))
 
         raise Exception(colorama.Fore.RED + f'No entries were found for {name}')
 
@@ -64,7 +69,8 @@ class ConfigManager:
         :param fallback: Fallback value if option is not found
         :return: Boolean value of the configuration option
         """
-        return self.config.getboolean(section, option, fallback=fallback)
+        with self._lock:
+            return self.config.getboolean(section, option, fallback=fallback)
 
     def get_sections(self):
         """
@@ -72,7 +78,8 @@ class ConfigManager:
 
         :return: List of section names
         """
-        return self.config.sections()
+        with self._lock:
+            return self.config.sections()
 
     def update_local_version(self, name, version):
         """
@@ -86,6 +93,13 @@ class ConfigManager:
     def save_config(self):
         """
         Save the current configuration to file.
+        """
+        with self._lock:
+            self._write_config()
+
+    def _write_config(self):
+        """
+        Write the current configuration to file (caller must hold the lock).
         """
         with open(self.config_file_name, 'w') as config_file:
             self.config.write(config_file)

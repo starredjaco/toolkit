@@ -1,4 +1,6 @@
 import re
+import time
+import platform
 import requests
 import urllib.parse
 import hashlib
@@ -13,21 +15,27 @@ class Scraper:
     Handles all scraping tasks for the Updater.
     """
 
-    def __init__(self, force_download, use_github_api, user_agent):
+    def __init__(self, force_download, use_github_api, user_agent, request_timeout=30, request_retries=3):
         """
         Initialize the Scraper with necessary configurations.
 
         :param use_github_api: Boolean to determine if GitHub API should be used
         :param user_agent: User agent string for HTTP requests
+        :param request_timeout: Timeout in seconds for HTTP requests
+        :param request_retries: Number of retry attempts on request failure
         """
         self.user_agent = user_agent
         self.force_download = force_download
         self.use_github_api = use_github_api
+        self.request_timeout = request_timeout
+        self.request_retries = request_retries
+        self.arch_suffix = '_x64' if '64' in platform.machine() else '_x86'
         self.tool_name = ""
         self.tool_config = {}
         self.github_version_check = 'https://github.com/{0}/releases.atom'
         self.github_files = 'https://github.com/{0}/releases/expanded_assets/{1}'
         self.github_api_files = 'https://api.github.com/repos/{0}/releases/latest'
+        self.scoop_manifest = 'https://raw.githubusercontent.com/ScoopInstaller/{0}/master/bucket/{1}.json'
         self.re_github_version = '\/releases\/tag\/(\S+)"'
         self.re_github_download = '"(.*?/{0})"'
 
@@ -41,6 +49,45 @@ class Scraper:
         self.tool_name = tool_name
         self.tool_config = tool_config
 
+    def _request_with_retry(self, method, url, headers):
+        """
+        Performs an HTTP request with retry logic and exponential backoff.
+
+        :param method: Callable that performs the request (e.g. requests.get)
+        :param url: The URL to request
+        :param headers: Dictionary of HTTP headers
+        :return: Response object
+        :raises Exception: If all attempts fail
+        """
+        last_exception = None
+        for attempt in range(self.request_retries):
+            try:
+                response = method(url, headers=headers, timeout=self.request_timeout)
+                response.raise_for_status()
+                return response
+            except Exception as exception:
+                last_exception = exception
+                if attempt < self.request_retries - 1:
+                    wait = 2 ** attempt
+                    logging.warning(f'{self.tool_name}: request failed (attempt {attempt + 1}/{self.request_retries}), retrying in {wait}s...')
+                    time.sleep(wait)
+
+        raise Exception(colorama.Fore.RED + f'{self.tool_name}: Error {last_exception}')
+
+    def head_request(self, url, headers=None):
+        """
+        Performs a HEAD request to a given URL with retry logic.
+
+        :param url: The URL to perform the HEAD request to
+        :param headers: Optional dictionary containing HTTP headers.
+        :return: Response object from the HEAD request
+        :raises Exception: If an error occurs during the request
+        """
+        if headers is None:
+            headers = {'User-Agent': self.user_agent}
+
+        return self._request_with_retry(requests.head, url, headers)
+
     def get_request(self, url, headers=None):
         """
         Performs a GET request to a given URL.
@@ -53,15 +100,19 @@ class Scraper:
         if headers is None:
             headers = {'User-Agent': self.user_agent}
 
-        try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            return response
-        except Exception as exception:
-            raise Exception(colorama.Fore.RED + f'{self.tool_name}: Error {exception}')
+        return self._request_with_retry(requests.get, url, headers)
 
     #################
     # Scraper methods
+    def get_arch_config(self, key):
+        """
+        Returns the architecture-specific config value if available, falling back to the generic key.
+
+        :param key: Base config key (e.g. 're_download', 'update_url')
+        :return: Value for the arch-specific key or the generic key, or None if neither exists
+        """
+        return self.tool_config.get(f'{key}{self.arch_suffix}') or self.tool_config.get(key)
+
     #################
     def scrape_web(self):
         """
@@ -119,7 +170,7 @@ class Scraper:
         logging.debug(f'{self.tool_name}: Regex matching for version done.')
 
         # the download url is not configured, so I have to generate one.
-        update_url = self.tool_config.get('update_url', None)
+        update_url = self.get_arch_config('update_url')
         if not update_url:
             logging.debug(f'{self.tool_name}: update_url not set. I try to generate it.')
             download_url = self.github_files.format(github_repo, download_version)
@@ -150,7 +201,7 @@ class Scraper:
         json_response = api_response.json()
         logging.debug(f'{self.tool_name}: JSON fetched, extracting version and download URL.')
 
-        update_url = self.tool_config.get('update_url', None)
+        update_url = self.get_arch_config('update_url')
         if not update_url:
             logging.debug(f'{self.tool_name}: update_url not set. I try to generate it.')
             update_url = self.get_download_url_from_github_api(json_response)
@@ -178,18 +229,13 @@ class Scraper:
         :raises Exception: If 'update_url' is missing or an HTTP error occurs.
         """
         # get http response
-        update_url = self.tool_config.get('update_url', None)
+        update_url = self.get_arch_config('update_url')
         if not update_url:
             raise Exception(colorama.Fore.RED +
                             f'{self.tool_name}: the update_url field is required for the selected mode')
 
-        try:
-            headers = {'User-Agent': self.user_agent}
-            http_response = requests.head(update_url, headers=headers)
-            http_response.raise_for_status()
-            logging.debug(f'{self.tool_name}: HTTP headers fetched, extracting version.')
-        except Exception as exception:
-            raise Exception(colorama.Fore.RED + f'{self.tool_name}: Error {exception}')
+        http_response = self.head_request(update_url)
+        logging.debug(f'{self.tool_name}: HTTP headers fetched, extracting version.')
 
         download_version = self.check_version_from_http(http_response.headers)
         if download_version is None:
@@ -265,14 +311,17 @@ class Scraper:
         :return: Version string
         """
         local_version = self.tool_config.get('local_version', '0')
+        tag_name = json.get('tag_name')
+        if not tag_name:
+            raise Exception(colorama.Fore.RED + f'{self.tool_name}: "tag_name" not found in GitHub API response')
 
-        if not self.force_download and local_version == json['tag_name']:
+        if not self.force_download and local_version == tag_name:
             logging.info(f'{self.tool_name}: {local_version} is the latest version')
             return None
 
-        logging.info(f'{self.tool_name}: updated from {local_version} --> {json["tag_name"]}')
+        logging.info(f'{self.tool_name}: updated from {local_version} --> {tag_name}')
 
-        return json['tag_name']
+        return tag_name
 
     #################
     # Download url methods
@@ -285,8 +334,8 @@ class Scraper:
         :param response_html: HTML content of the web page
         :return: Download URL found or None
         """
-        re_download = self.tool_config.get('re_download', None)
-        update_url = self.tool_config.get('update_url', None)
+        re_download = self.get_arch_config('re_download')
+        update_url = self.get_arch_config('update_url')
 
         # case 2: if update_url is not set, scrape the link from html
         if re_download:
@@ -328,7 +377,7 @@ class Scraper:
         :param download_url: Base URL for download
         :return: Download URL found or None
         """
-        re_download = self.tool_config.get('re_download', None)
+        re_download = self.get_arch_config('re_download')
         if not re_download:
             raise Exception(colorama.Fore.RED + f'{self.tool_name}: re_download not set!')
 
@@ -350,12 +399,16 @@ class Scraper:
         :param json: JSON response from GitHub API
         :return: Download URL found or None
         """
-        re_download = self.tool_config.get('re_download', None)
+        re_download = self.get_arch_config('re_download')
         if not re_download:
             raise Exception(colorama.Fore.RED + f'{self.tool_name}: re_download regex not set')
 
+        assets = json.get('assets')
+        if assets is None:
+            raise Exception(colorama.Fore.RED + f'{self.tool_name}: "assets" not found in GitHub API response')
+
         update_url = None
-        for attachment in json['assets']:
+        for attachment in assets:
             html_regex_download = re.findall(re_download, attachment['browser_download_url'])
             if html_regex_download:
                 update_url = attachment['browser_download_url']
@@ -365,6 +418,54 @@ class Scraper:
             raise Exception(colorama.Fore.RED + f'{self.tool_name}: re_download regex not match ({re_download})')
 
         return update_url
+
+    #################
+    # Scoop scraper
+    #################
+    def scrape_scoop(self):
+        """
+        Scrape a Scoop bucket manifest for version and download URL.
+
+        :return: dict|bool: A dictionary containing:
+            - 'download_version' (str): Version from the manifest.
+            - 'download_url' (str): Resolved download URL.
+            Returns False if already up to date.
+        :raises Exception: If the manifest is missing required fields.
+        """
+        app = self.tool_config.get('url', None)
+        bucket = self.tool_config.get('scoop_bucket', 'main').capitalize()
+        force_x86 = self.tool_config.get('force_x86', 'false').lower() == 'true'
+
+        manifest_url = self.scoop_manifest.format(bucket, app)
+        logging.debug(f'{self.tool_name}: fetching scoop manifest from {manifest_url}')
+        response = self.get_request(manifest_url)
+        manifest = response.json()
+
+        version = manifest.get('version')
+        if not version:
+            raise Exception(colorama.Fore.RED + f'{self.tool_name}: no version found in scoop manifest')
+
+        local_version = self.tool_config.get('local_version', '0')
+        if not self.force_download and local_version == version:
+            logging.info(f'{self.tool_name}: {local_version} is the latest version')
+            return False
+
+        logging.info(f'{self.tool_name}: updated from {local_version} --> {version}')
+
+        arch_key = '32bit' if (force_x86 or self.arch_suffix == '_x86') else '64bit'
+        arch_url = manifest.get('architecture', {}).get(arch_key, {}).get('url')
+        download_url = arch_url or manifest.get('url')
+
+        if not download_url:
+            raise Exception(colorama.Fore.RED + f'{self.tool_name}: no download URL found in scoop manifest')
+
+        if isinstance(download_url, list):
+            download_url = download_url[0]
+
+        return {
+            'download_version': version,
+            'download_url': download_url,
+        }
 
     #################
     # Scrape step
@@ -380,5 +481,7 @@ class Scraper:
             return self.scrape_github()
         elif from_url == 'http':
             return self.scrape_http()
+        elif from_url == 'scoop':
+            return self.scrape_scoop()
 
         return self.scrape_web()

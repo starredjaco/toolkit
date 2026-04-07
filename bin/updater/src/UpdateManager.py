@@ -2,9 +2,12 @@ import argparse
 import signal
 import sys
 import os
+import platform
+import threading
 import colorama
 import logging
 import psutil
+from concurrent.futures import ThreadPoolExecutor
 
 from universal_updater.Updater import Updater
 from universal_updater.ConfigManager import ConfigManager
@@ -20,7 +23,7 @@ class UpdateManager:
         """
         Initialize the UpdateManager with a ConfigManager instance and command-line arguments.
         """
-        self.version = '2.4.0'
+        self.version = '2.5.0'
         self.process_mutex = 'mutex.lock'
         self.config_file_name = 'tools.ini'
         self.config_section_defaults = 'UpdaterConfig'
@@ -42,7 +45,7 @@ class UpdateManager:
     
  Universal Tool Updater - by DSR!
  Web: https://github.com/xchwarze/universal-tool-updater
- Version: {self.version}
+ Version: {self.version} | Architecture: {'x64' if '64' in platform.machine() else 'x86'}
         """)
 
     def exit_handler(self, signum, frame):
@@ -87,6 +90,19 @@ class UpdateManager:
         """
         if not self.arguments.disable_mutex_check and os.path.exists(self.process_mutex):
             os.remove(self.process_mutex)
+
+    def get_argparse_default_int(self, option, default):
+        """
+        Retrieves an integer default value from config, falling back to default on invalid values.
+
+        :param option: The name of the argparse option
+        :param default: The integer default value if not found or invalid
+        :return: Integer default value
+        """
+        try:
+            return int(self.get_argparse_default(option, default, is_bool=False))
+        except (ValueError, TypeError):
+            return default
 
     def get_argparse_default(self, option, default, is_bool=True):
         """
@@ -201,6 +217,13 @@ class UpdateManager:
             default=False
         )
         parser.add_argument(
+            '--dry-run',
+            dest='dry_run',
+            help='Check for available updates without downloading or installing anything.',
+            action='store_true',
+            default=False
+        )
+        parser.add_argument(
             '-d',
             '--debug',
             dest='debug',
@@ -208,8 +231,46 @@ class UpdateManager:
             action='store_true',
             default=False
         )
+        parser.add_argument(
+            '-rt',
+            '--request-timeout',
+            dest='request_timeout',
+            help='Timeout in seconds for HTTP requests.',
+            type=int,
+            default=self.get_argparse_default_int('request_timeout', 30)
+        )
+        parser.add_argument(
+            '-dre',
+            '--download-retries',
+            dest='download_retries',
+            help='Number of retry attempts on download failure.',
+            type=int,
+            default=self.get_argparse_default_int('download_retries', 3)
+        )
+        parser.add_argument(
+            '-pw',
+            '--parallel-workers',
+            dest='parallel_workers',
+            help='Number of tools to update in parallel.',
+            type=int,
+            default=self.get_argparse_default_int('parallel_workers', 1)
+        )
+        parser.add_argument(
+            '-ds',
+            '--download-segments',
+            dest='download_segments',
+            help='Number of segments for accelerated downloads.',
+            type=int,
+            default=self.get_argparse_default_int('download_segments', 3)
+        )
 
         self.arguments = parser.parse_args()
+
+        if self.arguments.parallel_workers < 1:
+            parser.error('--parallel-workers must be at least 1')
+
+        if self.arguments.download_segments < 1:
+            parser.error('--download-segments must be at least 1')
 
     def update_default_params(self):
         """
@@ -225,8 +286,12 @@ class UpdateManager:
         self.config_manager.set_config(self.config_section_defaults, 'disable_progress', str(self.arguments.disable_progress))
         self.config_manager.set_config(self.config_section_defaults, 'save_format_type', self.arguments.save_format_type)
         self.config_manager.set_config(self.config_section_defaults, 'use_github_api', self.arguments.use_github_api)
+        self.config_manager.set_config(self.config_section_defaults, 'request_timeout', str(self.arguments.request_timeout))
+        self.config_manager.set_config(self.config_section_defaults, 'download_retries', str(self.arguments.download_retries))
+        self.config_manager.set_config(self.config_section_defaults, 'parallel_workers', str(self.arguments.parallel_workers))
+        self.config_manager.set_config(self.config_section_defaults, 'download_segments', str(self.arguments.download_segments))
 
-        logging.info(colorama.Fore.GREEN + 'Update default params successful')
+        logging.info(colorama.Fore.GREEN + '[*] Update default params successful')
 
     def set_logging_level(self):
         """
@@ -284,6 +349,7 @@ class UpdateManager:
         """
         updater = Updater(
             config_manager=self.config_manager,
+            updater_setup=vars(self.arguments),
         )
         if self.config_section_self_update in self.config_manager.get_sections() and \
                 not self.arguments.disable_self_update:
@@ -297,25 +363,38 @@ class UpdateManager:
             # add missing new line separator
             logging.info("\n")
 
-    def handle_tool_updates(self, updater, update_list):
+    def handle_tool_updates(self, updater_setup, update_list):
         """
         Handles the update process for each tool in the update list.
 
-        :param updater: An instance of the Updater class responsible for updating tools
+        :param updater_setup: Dictionary of updater configuration settings
         :param update_list: List of tools to update
         """
         failed_updates = 0
         failed_names = []
+        lock = threading.Lock()
         total_updates = len(update_list)
+        parallel_workers = updater_setup.get('parallel_workers', 1)
+        if parallel_workers > 1 and not updater_setup.get('disable_progress', False):
+            updater_setup = {**updater_setup, 'disable_progress': True}
         logging.info(colorama.Fore.YELLOW + '[+] Checking for tool updates:')
 
-        for name in update_list:
+        def update_tool(name):
+            nonlocal failed_updates
+            updater = Updater(
+                config_manager=self.config_manager,
+                updater_setup=updater_setup,
+            )
             try:
                 updater.update(name)
             except Exception as exception:
-                failed_updates += 1
-                failed_names.append(name)
+                with lock:
+                    failed_updates += 1
+                    failed_names.append(name)
                 logging.error(exception)
+
+        with ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+            executor.map(update_tool, update_list)
 
         # add missing new line separator
         logging.info("\n")
@@ -334,15 +413,11 @@ class UpdateManager:
         """
         self.handle_auto_update()
 
-        updater = Updater(
-            config_manager=self.config_manager,
-
-            # To convert from Namespace to Dict I have to use vars()
-            updater_setup=vars(self.arguments),
-        )
+        updater_setup = vars(self.arguments)
         update_list = self.generate_update_list()
-        self.handle_tool_updates(updater, update_list)
-        updater.cleanup_update_folder()
+        self.handle_tool_updates(updater_setup, update_list)
+
+        Updater(config_manager=self.config_manager).cleanup_updates_root()
 
     def main(self):
         """

@@ -108,8 +108,7 @@ class Packer:
         :return: Path to the unpacked folder
         """
         file_ext = pathlib.Path(file_path).suffix
-        update_folder = str(file_path).replace(file_ext, '')
-        unpack_path = pathlib.Path(self.update_folder_path).joinpath(update_folder)
+        unpack_path = pathlib.Path(file_path).with_suffix('')
 
         if file_ext in self.valid_extensions:
             update_file_pass = self.tool_config.get('update_file_pass', None)
@@ -121,11 +120,12 @@ class Packer:
 
         # dirty hack for correct zip inside a zip...
         folder_list = os.listdir(unpack_path)
-        folder_sample = pathlib.Path(unpack_path).joinpath(folder_list[0])
-        file_ext = pathlib.Path(folder_sample).suffix
-        if len(folder_list) == 1 & (file_ext in self.valid_extensions):
-            self.unpack(folder_sample, file_ext, unpack_path, None)
-            os.remove(folder_sample)
+        if len(folder_list) == 1:
+            folder_sample = pathlib.Path(unpack_path).joinpath(folder_list[0])
+            file_ext = pathlib.Path(folder_sample).suffix
+            if file_ext in self.valid_extensions:
+                self.unpack(folder_sample, file_ext, unpack_path, None)
+                os.remove(folder_sample)
 
         return unpack_path
 
@@ -163,7 +163,7 @@ class Packer:
         logging.info(f'{self.tool_name}: merging with "{old_compress_name}"')
 
         # unpack old version
-        old_tool_unpack_folder = str(old_compress_name).replace('.7z', '')
+        old_tool_unpack_folder = pathlib.Path(old_compress_name).stem
         old_tool_unpack_path = pathlib.Path(self.update_folder_path).joinpath(old_tool_unpack_folder)
         self.unpack(old_tool_compress_path, '.7z', old_tool_unpack_path, None)
 

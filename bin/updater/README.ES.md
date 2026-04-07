@@ -43,13 +43,19 @@ Los valores utilizados para la configuración son:
 |--------------------|-------------|-----------------------------------------------------------------------------------------------------|
 | `folder`           | SÍ          | Carpeta donde se guardará la herramienta. Se crea si no existe.                                     |
 | `url`              | SÍ          | Página web principal para comprobar versión y/o hacer scraping con regex.                           |
-| `from`             | NO          | Estrategia a emplear: `web`, `github` o `http`. Por defecto `web`.                                  |
+| `from`             | NO          | Estrategia a emplear: `web`, `github`, `http` o `scoop`. Por defecto `web`.                         |
 | `local_version`    | NO          | Versión actualmente instalada. Se actualiza tras cada ejecución exitosa.                            |
 | `re_version`       | NO          | Regex para extraer la nueva versión del HTML en `url`.                                              |
 | `re_download`      | NO          | Regex para extraer el enlace de descarga del HTML; puede capturar URL completa o ruta relativa.     |
 | `update_url`       | NO          | URL base o enlace directo de descarga. Se usa cuando `re_download` da ruta relativa o no hay regex. |
+| `re_download_x64`  | NO          | Override de `re_download` para sistemas x64. Si no está, se usa `re_download`.                      |
+| `re_download_x86`  | NO          | Override de `re_download` para sistemas x86. Si no está, se usa `re_download`.                      |
+| `update_url_x64`   | NO          | Override de `update_url` para sistemas x64. Si no está, se usa `update_url`.                        |
+| `update_url_x86`   | NO          | Override de `update_url` para sistemas x86. Si no está, se usa `update_url`.                        |
 | `update_file_pass` | NO          | Contraseña para descomprimir el archivo descargado.                                                 |
 | `merge`            | NO          | Si está definido, fusiona los archivos nuevos con los existentes.                                   |
+| `scoop_bucket`     | NO          | Bucket de Scoop cuando `from = scoop`: `main` o `extras`. Por defecto: `main`.                      |
+| `force_x86`        | NO          | Con `from = scoop`, fuerza la descarga de 32 bits ignorando la arquitectura del OS. Por defecto: `false`. |
 | `pre_update`       | NO          | Comando o script a ejecutar antes de iniciar la actualización.                                      |
 | `post_update`      | NO          | Comando o script a ejecutar inmediatamente tras completar la descarga.                              |
 | `post_unpack`      | NO          | Comando o script a ejecutar tras descomprimir el archivo descargado.                                |
@@ -75,8 +81,14 @@ Los valores utilizados para la configuración son:
    - Si difiere de `local_version` (o `force_download`), usa `update_url` para descargar.  
    - Si coincide y `force_download` es falso, no hay actualización.
 
-4. **En otro caso**  
-   Error: no hay ni `re_download` ni `update_url` para determinar el enlace. 
+4. **Modo Scoop (`from = scoop`)**
+   - Obtiene el manifest JSON desde `https://raw.githubusercontent.com/ScoopInstaller/{Bucket}/master/bucket/{app}.json`.
+   - Lee `version` del root del manifest y compara con `local_version`.
+   - Resuelve la URL desde `architecture.64bit.url` o `architecture.32bit.url` según la arquitectura del OS detectada. `force_x86 = true` fuerza siempre `32bit` ignorando la detección. Fallback al campo `url` del root si la key de arquitectura no existe.
+   - Si el campo URL es una lista, usa el primer elemento.
+
+5. **En otro caso**
+   Error: no hay ni `re_download` ni `update_url` para determinar el enlace.
 
 
 ## Parámetros de Línea de Comandos
@@ -99,6 +111,11 @@ El actualizador ofrece un conjunto flexible de parámetros para controlar su com
 | `-udp, --update-default-params`                                    | Actualiza los parámetros predeterminados almacenados en la configuración.                               |
 | `-dmc, --disable-mutex-check`                                      | Permite ejecutar múltiples instancias del script desactivando la verificación de mutex.                 |
 | `-d, --debug`                                                      | Activa la salida detallada de depuración para resolver problemas.                                       |
+| `--dry-run`                                                        | Verifica actualizaciones disponibles sin descargar ni instalar nada.                                    |
+| `-rt SEGUNDOS, --request-timeout SEGUNDOS`                         | Timeout en segundos para las peticiones HTTP. Por defecto: `30`.                                        |
+| `-dre N, --download-retries N`                                     | Cantidad de reintentos ante fallo de descarga (backoff exponencial). Por defecto: `3`.                  |
+| `-pw N, --parallel-workers N`                                      | Cantidad de herramientas a actualizar en paralelo. Por defecto: `1` (secuencial).                       |
+| `-ds N, --download-segments N`                                     | Cantidad de segmentos para descargas aceleradas. Por defecto: `3`.                                      |
 
 
 ## Ejemplos
@@ -158,5 +175,5 @@ SCHTASKS /DELETE /TN "ToolkitUpdater"
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile UpdateManager.py --icon=../assets/appicon.ico
+pyinstaller --onefile UpdateManager.py --icon=../assets/appicon.ico --collect-all aiohttp --collect-all aiofiles
 ```
