@@ -70,11 +70,6 @@ A collection of tools designed to deeply analyze and interpret software and data
 - **Developer:** Hors
 - **Description:** XELFViewer is a cross-platform viewer/editor for ELF binaries, supporting Windows, Linux, and macOS. It allows in-depth inspection of ELF headers, sections, segments, and dynamic linking data, making it useful for reverse engineering and binary inspection tasks involving Unix-like systems.
 
-### XPEViewer
-- **Web:** https://github.com/horsicq/XPEViewer
-- **Developer:** Hors
-- **Description:** XPEViewer is a lightweight PE file viewer/editor developed by Hors, compatible with Windows, Linux, and macOS. It offers detailed insights into the PE structure, including headers, sections, import/export tables, and resources—ideal for static analysis of Windows executables.
-
 
 ## 🧩 Decompilers
 Tools for decompiling binaries to source code.
@@ -147,11 +142,6 @@ executables that have been packed and protected using AutoIt3Camo, Themida, Arma
 - **Web:** https://github.com/zrax/pycdc
 - **Developer:** Michael Hansen, Darryl Pogue, charlietang98, Kunal Parmar, Olivier Iffrig, Zlodiy
 - **Description:** Decompyle++ is a tool that aims to translate compiled Python byte-code back into valid and human-readable Python source code. It includes both a byte-code disassembler (pycdas) and a decompiler (pycdc), and supports byte-code from any version of Python. 
-
-### [VB] VB Decompiler
-- **Web:** https://www.vb-decompiler.org
-- **Developer:** DotFix Software
-- **Description:** VB Decompiler is an advanced tool that can decompile programs (EXE, DLL, or OCX) written in Visual Basic 5.0/6.0 and disassemble programs based on .NET technology. As you know, programs written in Visual Basic can be compiled to interpreted p-code or to native code, and a .NET assembly is always compiled to Microsoft intermediate language (MSIL).
 
 ### [VB] VBDEC
 - ***Note:*** Available using the extra called: **VBDEC**
